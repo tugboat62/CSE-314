@@ -1,0 +1,258 @@
+diff --git a/Makefile b/Makefile
+index 39a99d7..e6dcb9e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -50,7 +50,7 @@ endif
+ 
+ QEMU = qemu-system-riscv64
+ 
+-CC = $(TOOLPREFIX)gcc
++CC = $(TOOLPREFIX)gcc-8
+ AS = $(TOOLPREFIX)gas
+ LD = $(TOOLPREFIX)ld
+ OBJCOPY = $(TOOLPREFIX)objcopy
+@@ -125,9 +125,12 @@ UPROGS=\
+ 	$U/_ln\
+ 	$U/_ls\
+ 	$U/_mkdir\
++	$U/_myprog\
+ 	$U/_rm\
+ 	$U/_sh\
+ 	$U/_stressfs\
++	$U/_sysinfotest\
++	$U/_trace\
+ 	$U/_usertests\
+ 	$U/_grind\
+ 	$U/_wc\
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..2eef91b 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -63,6 +63,7 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++int             freemem(void); 
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+@@ -99,6 +100,8 @@ void            procinit(void);
+ void            scheduler(void) __attribute__((noreturn));
+ void            sched(void);
+ void            sleep(void*, struct spinlock*);
++int             sysinfo(void);
++int             trace(int);
+ void            userinit(void);
+ int             wait(uint64);
+ void            wakeup(void*);
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index 0699e7e..9304043 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -80,3 +80,15 @@ kalloc(void)
+     memset((char*)r, 5, PGSIZE); // fill with junk
+   return (void*)r;
+ }
++
++int freemem()
++{
++  struct run *r;
++  int n = 0;
++  acquire(&kmem.lock);
++  for(r = kmem.freelist; r; r = r->next)
++    ++n;
++  release(&kmem.lock);
++  return n * PGSIZE;
++}
++
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 959b778..b03fe1d 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -26,6 +26,7 @@ extern char trampoline[]; // trampoline.S
+ // must be acquired before any p->lock.
+ struct spinlock wait_lock;
+ 
++
+ // Allocate a page for each process's kernel stack.
+ // Map it high in memory, followed by an invalid
+ // guard page.
+@@ -228,6 +229,29 @@ uchar initcode[] = {
+   0x00, 0x00, 0x00, 0x00
+ };
+ 
++// print necessary information about current runnning system
++int sysinfo(void) 
++{
++  int n_proc = 0;
++  struct proc *p;
++
++  for(p = proc; p < &proc[NPROC]; p++) {
++    acquire(&p->lock);
++    if(p->state != UNUSED) {
++      n_proc++;
++    }
++    release(&p->lock);
++  }
++
++  int free = freemem();
++
++  printf("\nsysinfo system call prints:\n");
++  printf("free-memory: %d bytes\n", free);
++  printf("n_proc  : %d\n\n", n_proc);
++  
++  return 0;
++}
++
+ // Set up first user process.
+ void
+ userinit(void)
+@@ -302,6 +326,9 @@ fork(void)
+   // Cause fork to return 0 in the child.
+   np->trapframe->a0 = 0;
+ 
++  // Copy the traceid in the new process
++  np->traceid = p->traceid;
++
+   // increment reference counts on open file descriptors.
+   for(i = 0; i < NOFILE; i++)
+     if(p->ofile[i])
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..7612528 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -91,6 +91,7 @@ struct proc {
+   int killed;                  // If non-zero, have been killed
+   int xstate;                  // Exit status to be returned to parent's wait
+   int pid;                     // Process ID
++  int traceid;                // Trace ID of the system call that we want to trace     
+ 
+   // wait_lock must be held when using this:
+   struct proc *parent;         // Parent process
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..a4f5a3b 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -7,6 +7,12 @@
+ #include "syscall.h"
+ #include "defs.h"
+ 
++char *name[] = {
++  "fork", "exit", "wait", "pipe", "read", "kill", "exec", "fstat",
++  "chdir", "dup", "getpid", "sbrk", "sleep", "uptime", "open",
++  "write", "mknod", "unlink", "link", "mkdir", "close", "trace", "sysinfo"
++};
++
+ // Fetch the uint64 at addr from the current process.
+ int
+ fetchaddr(uint64 addr, uint64 *ip)
+@@ -101,6 +107,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_trace(void);
++extern uint64 sys_sysinfo(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,19 +134,27 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_trace]   sys_trace,
++[SYS_sysinfo] sys_sysinfo,
+ };
+ 
+ void
+ syscall(void)
+ {
+-  int num;
++  int num, trace;
+   struct proc *p = myproc();
+ 
+-  num = p->trapframe->a7;
++  trace = p->traceid;
++  num = p->trapframe->a7; // system call number
+   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+     // Use num to lookup the system call function for num, call it,
+     // and store its return value in p->trapframe->a0
+-    p->trapframe->a0 = syscalls[num]();
++    if(num == trace){
++      p->trapframe->a0 = syscalls[num]();
++      printf("pid: %d, syscall: %s, return value: %d\n",
++              p->pid, name[trace-1], p->trapframe->a0);
++    } 
++    else p->trapframe->a0 = syscalls[num]();
+   } else {
+     printf("%d %s: unknown sys call %d\n",
+             p->pid, p->name, num);
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..0dfedc7 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_trace  22
++#define SYS_sysinfo 23
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 1de184e..9d5e089 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -32,7 +32,7 @@ sys_wait(void)
+ {
+   uint64 p;
+   argaddr(0, &p);
+-  return wait(p);
++  return wait(p); // has one argument
+ }
+ 
+ uint64
+@@ -77,6 +77,22 @@ sys_kill(void)
+   return kill(pid);
+ }
+ 
++// used to trace the system calls user wants to trace
++uint64
++sys_trace(void)
++{
++  int traceid;
++  argint(0, &traceid);
++  myproc()->traceid = traceid;
++  return 0;
++}
++
++uint64
++sys_sysinfo(void)
++{
++  return sysinfo(); 
++}
++
+ // return how many clock tick interrupts have occurred
+ // since start.
+ uint64
+diff --git a/user/user.h b/user/user.h
+index 4d398d5..b8500b8 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -22,6 +22,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int trace(int);
++int sysinfo(void);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..353a1f8 100644
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("trace");
++entry("sysinfo");
+\ No newline at end of file
