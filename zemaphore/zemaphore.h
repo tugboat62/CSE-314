@@ -1,3 +1,6 @@
+#ifndef __ZEMAPHORE_H__
+#define __ZEMAPHORE_H__
+
 #include <pthread.h>
 
 typedef struct zemaphore {
@@ -9,3 +12,5 @@ typedef struct zemaphore {
 void zem_init(zem_t *, int);
 void zem_up(zem_t *);
 void zem_down(zem_t *);
+
+#endif

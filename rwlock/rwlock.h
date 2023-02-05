@@ -8,7 +8,9 @@ using namespace std;
 
 struct read_write_lock
 {
-
+    pthread_mutex_t count_lock;
+    unsigned long long reader_count, writer_queue_count, writer_lock;
+    pthread_cond_t reader_cv, writer_cv;
 };
 
 void InitalizeReadWriteLock(struct read_write_lock * rw);
