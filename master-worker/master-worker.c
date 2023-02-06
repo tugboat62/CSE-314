@@ -11,9 +11,9 @@ int item_to_produce, curr_buf_size, items_consumed;
 int total_items, max_buf_size, num_workers, num_masters;
 
 int *buffer;
-pthread_mutex_t lock;
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_cond_t empty_cond, full_cond;
+pthread_cond_t empty_cond = PTHREAD_COND_INITIALIZER, full_cond = PTHREAD_COND_INITIALIZER;
 
 void print_produced(int num, int master)
 {
@@ -37,20 +37,31 @@ void *generate_requests_loop(void *data)
   {
 
     pthread_mutex_lock(&lock);
+    
     if (item_to_produce >= total_items)
     {
       pthread_mutex_unlock(&lock);
       break;
     }
-    while (curr_buf_size >= max_buf_size)
+
+    while (curr_buf_size >= max_buf_size && item_to_produce < total_items)
     {
       pthread_cond_wait(&empty_cond, &lock);
     }
+
+    if (item_to_produce >= total_items)
+    {
+      pthread_mutex_unlock(&lock);
+      break;
+    }
+
     buffer[curr_buf_size] = item_to_produce;
     curr_buf_size++;
+    
     print_produced(item_to_produce, thread_id);
     item_to_produce++;
-    pthread_cond_signal(&full_cond);
+
+    pthread_cond_broadcast(&full_cond);
     pthread_mutex_unlock(&lock);
   }
   return 0;
@@ -66,27 +77,31 @@ void *generate_response_loop(void *data)
   while (1)
   {
     pthread_mutex_lock(&lock);
+    
     if (item_to_produce >= total_items && curr_buf_size <= 0)
     {
       pthread_mutex_unlock(&lock);
       break;
     }
+
     while (curr_buf_size <= 0 && items_consumed < total_items)
     {
       pthread_cond_wait(&full_cond, &lock);
     }
-    if (items_consumed >= total_items && curr_buf_size <= 0)
+
+    if (items_consumed >= total_items)
     {
-      pthread_cond_broadcast(&empty_cond);
       pthread_mutex_unlock(&lock);
       break;
     }
+    
     curr_buf_size--;
     int item = buffer[curr_buf_size];
     buffer[curr_buf_size] = 0;
     items_consumed++;
     print_consumed(item, thread_id);
-    pthread_cond_signal(&empty_cond);
+
+    pthread_cond_broadcast(&empty_cond);
     pthread_mutex_unlock(&lock);
   }
   return 0;
@@ -116,8 +131,8 @@ int main(int argc, char *argv[])
     max_buf_size = atoi(argv[2]);
   }
 
-  // num_masters = 3;
-  // num_workers = 23;
+  // num_masters = 21;
+  // num_workers = 20;
   // total_items = 10000;
   // max_buf_size = 87;
 
