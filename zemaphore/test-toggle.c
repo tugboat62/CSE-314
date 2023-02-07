@@ -8,8 +8,8 @@
 #include <pthread.h>
 #include "zemaphore.h"
 
-#define NUM_THREADS 43
-#define NUM_ITER 5
+#define NUM_THREADS 5
+#define NUM_ITER 10
 zem_t zemaphores[NUM_THREADS];
 
 void *justprint(void *data)

@@ -131,8 +131,8 @@ int main(int argc, char *argv[])
     max_buf_size = atoi(argv[2]);
   }
 
-  // num_masters = 21;
-  // num_workers = 20;
+  // num_masters = 3;
+  // num_workers = 23;
   // total_items = 10000;
   // max_buf_size = 87;
 
